@@ -1,0 +1,11 @@
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+python-multipart==0.0.18
+appwrite==6.0.0
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+numpy==1.26.4
+opencv-python==4.10.0.84
+deepface==0.0.93
+pandas==2.2.3
+email-validator==2.2.0

@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f9f5ef;
+  --bg-soft: #f5eee4;
+  --panel: rgba(255, 255, 255, 0.72);
+  --text: #1f1b18;
+  --muted: #665d56;
+  --border: rgba(83, 67, 54, 0.22);
+  --accent: #d86f2d;
+  --accent-foreground: #fff8f4;
+  --ok: #1f8c50;
+  --warn: #c65d1a;
+}
+
+.dark {
+  --bg: #151412;
+  --bg-soft: #1f1b17;
+  --panel: rgba(25, 22, 18, 0.85);
+  --text: #f7eee5;
+  --muted: #c6b8aa;
+  --border: rgba(211, 179, 145, 0.22);
+  --accent: #f29f4b;
+  --accent-foreground: #2c1606;
+  --ok: #67d18f;
+  --warn: #ffb06b;
+}
+
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    color: var(--text);
+    background:
+      radial-gradient(circle at 5% 10%, rgba(216, 111, 45, 0.14), transparent 35%),
+      radial-gradient(circle at 90% 20%, rgba(206, 151, 51, 0.12), transparent 32%),
+      linear-gradient(145deg, var(--bg), var(--bg-soft));
+  }
+}
+
+@layer utilities {
+  .bg-panel {
+    background-color: var(--panel);
+  }
+
+  .text-muted {
+    color: var(--muted);
+  }
+
+  .border-border {
+    border-color: var(--border);
+  }
+
+  .bg-accent {
+    background-color: var(--accent);
+  }
+
+  .text-accent-foreground {
+    color: var(--accent-foreground);
+  }
+
+  .status-ok {
+    color: var(--ok);
+  }
+
+  .status-warn {
+    color: var(--warn);
+  }
+}

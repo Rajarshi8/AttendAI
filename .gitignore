@@ -1,0 +1,24 @@
+# Node / Next.js
+node_modules/
+.next/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Environment files
+.env
+.env.local
+
+# Build outputs
+dist/
+build/
+
+# Logs and local DBs
+*.log
+*.sqlite3
+
+# OS artifacts
+.DS_Store
