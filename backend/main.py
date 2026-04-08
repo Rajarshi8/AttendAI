@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from core.config import get_settings
 from middlewares import AppwriteAuthMiddleware
-from routes import attendance_router, recognize_router, register_router
+from routes import attendance_router, recognize_router, register_router, sessions_router, users_router
 
 settings = get_settings()
 
@@ -27,3 +27,5 @@ def health_check():
 app.include_router(register_router, prefix=settings.api_prefix)
 app.include_router(recognize_router, prefix=settings.api_prefix)
 app.include_router(attendance_router, prefix=settings.api_prefix)
+app.include_router(sessions_router, prefix=settings.api_prefix)
+app.include_router(users_router, prefix=settings.api_prefix)

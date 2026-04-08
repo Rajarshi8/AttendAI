@@ -4,129 +4,203 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 
 import { WebcamFeed } from "@/components/WebcamFeed";
-import { markAttendance, recognizeUser } from "@/lib/api";
-import { UserProfile } from "@/types";
+import { getActiveSession, getCurrentProfile, markAttendance } from "@/lib/api";
+import { AttendanceRecord, CurrentUserProfile, SessionItem } from "@/types";
 
 export default function AttendancePage() {
   const webcamRef = useRef<Webcam | null>(null);
-  const frameBufferRef = useRef<string[]>([]);
-  const frameCounterRef = useRef(0);
-  const processingRef = useRef(false);
-  const lastMarkedUserRef = useRef<string | null>(null);
-
-  const [running, setRunning] = useState(false);
-  const [status, setStatus] = useState("Idle");
-  const [recognizedUser, setRecognizedUser] = useState<UserProfile | null>(null);
-  const [similarity, setSimilarity] = useState<number | null>(null);
+  const [profile, setProfile] = useState<CurrentUserProfile | null>(null);
+  const [activeSession, setActiveSession] = useState<SessionItem | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [status, setStatus] = useState("Waiting for active attendance session...");
   const [attendanceMessage, setAttendanceMessage] = useState<string | null>(null);
+  const [attendanceRecord, setAttendanceRecord] = useState<AttendanceRecord | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const processRecognition = useCallback(async () => {
-    if (processingRef.current) return;
-
-    const frame = webcamRef.current?.getScreenshot();
-    if (!frame) {
-      setStatus("Waiting for webcam frame...");
-      return;
-    }
-
-    frameBufferRef.current = [...frameBufferRef.current.slice(-11), frame];
-    frameCounterRef.current += 1;
-
-    if (frameCounterRef.current % 3 !== 0) {
-      return;
-    }
-
-    processingRef.current = true;
-
+  const pollActiveSession = useCallback(async () => {
     try {
-      const result = await recognizeUser({
-        frame,
-        frames: frameBufferRef.current,
-        require_liveness: true,
-      });
-
-      setStatus(result.message);
-
-      if (result.matched && result.live && result.user) {
-        setRecognizedUser(result.user);
-        setSimilarity(result.similarity);
-
-        if (lastMarkedUserRef.current !== result.user.id) {
-          const attendanceResult = await markAttendance({ status: "present" });
-          setAttendanceMessage(attendanceResult.message);
-          lastMarkedUserRef.current = result.user.id;
-        }
+      const response = await getActiveSession();
+      setActiveSession(response.session);
+      if (response.session) {
+        setStatus(`Attendance active for ${response.session.class_name}.`);
       } else {
-        setRecognizedUser(null);
-        setSimilarity(null);
+        setStatus("No active attendance session right now.");
       }
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Recognition request failed.";
+      const errorMessage = err instanceof Error ? err.message : "Could not fetch active session.";
       setStatus(errorMessage);
     } finally {
-      processingRef.current = false;
+      setLoadingSession(false);
     }
   }, []);
 
   useEffect(() => {
-    if (!running) return;
+    void (async () => {
+      try {
+        const currentProfile = await getCurrentProfile();
+        setProfile(currentProfile);
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "Could not load profile.";
+        setStatus(errorMessage);
+      }
+      await pollActiveSession();
+    })();
+  }, [pollActiveSession]);
 
+  useEffect(() => {
     const id = setInterval(() => {
-      void processRecognition();
-    }, 850);
+      void pollActiveSession();
+    }, 6000);
 
     return () => clearInterval(id);
-  }, [processRecognition, running]);
+  }, [pollActiveSession]);
+
+  const getCurrentPosition = () =>
+    new Promise<GeolocationPosition>((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error("Geolocation is not supported in this browser."));
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+      });
+    });
+
+  const captureBurstFrames = async (count: number, delayMs: number) => {
+    const frames: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const frame = webcamRef.current?.getScreenshot();
+      if (frame) frames.push(frame);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return frames;
+  };
+
+  const onMarkAttendance = async () => {
+    if (!activeSession) return;
+
+    setSubmitting(true);
+    setAttendanceMessage(null);
+
+    try {
+      const position = await getCurrentPosition();
+      const burstFrames = await captureBurstFrames(8, 120);
+      const primaryFrame = burstFrames[burstFrames.length - 1] || webcamRef.current?.getScreenshot();
+
+      if (!primaryFrame) {
+        throw new Error("Could not capture webcam frame.");
+      }
+
+      const result = await markAttendance({
+        session_id: activeSession.session_id,
+        frame: primaryFrame,
+        frames: burstFrames,
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+        require_liveness: true,
+      });
+
+      setAttendanceMessage(result.message);
+      setAttendanceRecord(result.record);
+      setStatus(result.message);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Attendance request failed.";
+      setStatus(errorMessage);
+      setAttendanceMessage(errorMessage);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!profile) {
+    return <p className="text-muted">Loading student profile...</p>;
+  }
+
+  if (profile.role !== "student") {
+    return (
+      <div className="rounded-2xl border border-border bg-panel p-5">
+        <h1 className="text-2xl font-bold">Student View</h1>
+        <p className="mt-2 text-muted">This page is for student attendance marking only. Your current role is {profile.role}.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1.3fr,1fr]">
-      <section className="space-y-4">
-        <h1 className="text-3xl font-bold">Live Attendance</h1>
-        <p className="text-muted">The system processes every 3rd frame and performs head-movement liveness before recognition.</p>
-        <WebcamFeed webcamRef={webcamRef} />
-
-        <div className="flex gap-3">
+      {activeSession && (
+        <div className="fixed bottom-5 right-5 z-20 w-[min(92vw,380px)] rounded-2xl border border-border bg-panel p-4 shadow-glow">
+          <p className="text-sm uppercase tracking-[0.1em] text-muted">Attendance Started</p>
+          <p className="mt-1 font-semibold">{activeSession.class_name}</p>
+          <p className="mt-1 text-sm text-muted">Tap Mark Attendance to submit face + geofence validation.</p>
           <button
             type="button"
-            onClick={() => setRunning((prev) => !prev)}
+            onClick={() => void onMarkAttendance()}
+            disabled={submitting}
+            className="mt-3 rounded-full bg-accent px-4 py-2 text-sm font-semibold text-accent-foreground disabled:opacity-70"
+          >
+            {submitting ? "Submitting..." : "Mark Attendance"}
+          </button>
+        </div>
+      )}
+
+      <section className="space-y-4">
+        <h1 className="text-3xl font-bold">Student Attendance</h1>
+        <p className="text-muted">Keep your face in frame. When attendance opens, capture face and location to submit.</p>
+        <WebcamFeed webcamRef={webcamRef} />
+
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => void onMarkAttendance()}
+            disabled={!activeSession || submitting || loadingSession}
             className="rounded-full bg-accent px-5 py-2.5 font-semibold text-accent-foreground"
           >
-            {running ? "Stop" : "Start"} Recognition
+            {submitting ? "Marking..." : activeSession ? "Mark Attendance" : "Waiting for Session"}
           </button>
 
           <button
             type="button"
             onClick={() => {
-              frameBufferRef.current = [];
-              frameCounterRef.current = 0;
-              lastMarkedUserRef.current = null;
-              setRecognizedUser(null);
-              setSimilarity(null);
+              setAttendanceRecord(null);
               setAttendanceMessage(null);
-              setStatus("Idle");
+              setStatus("Ready");
             }}
             className="rounded-full border border-border px-4 py-2"
           >
-            Reset
+            Clear
           </button>
         </div>
+
+        {activeSession && (
+          <div className="rounded-xl border border-border p-4 text-sm">
+            <p>
+              Active Class: <span className="font-semibold">{activeSession.class_name}</span>
+            </p>
+            <p>Session ID: {activeSession.session_id}</p>
+            <p>Allowed Radius: {activeSession.radius_meters}m</p>
+            <p>Started: {new Date(activeSession.start_time).toLocaleString()}</p>
+          </div>
+        )}
       </section>
 
       <section className="space-y-4 rounded-2xl border border-border bg-panel p-5">
-        <h2 className="text-xl font-semibold">Recognition Status</h2>
+        <h2 className="text-xl font-semibold">Attendance Status</h2>
         <p className="text-muted">{status}</p>
 
-        {recognizedUser ? (
+        {attendanceRecord ? (
           <div className="space-y-2 rounded-xl border border-border p-4">
-            <p className="font-semibold">{recognizedUser.name}</p>
-            <p className="text-sm text-muted">{recognizedUser.email}</p>
-            <p className="text-sm text-muted">ID: {recognizedUser.user_id}</p>
+            <p className="font-semibold">{attendanceRecord.user_name}</p>
+            <p className="text-sm text-muted">{attendanceRecord.email}</p>
+            <p className="text-sm text-muted">Session: {attendanceRecord.session_id || "-"}</p>
+            <p className="text-sm text-muted">Status: {attendanceRecord.status}</p>
             <p className="text-sm">
-              Similarity: <span className="font-semibold">{similarity?.toFixed(4)}</span>
+              Distance: <span className="font-semibold">{attendanceRecord.distance != null ? `${attendanceRecord.distance.toFixed(2)}m` : "-"}</span>
             </p>
           </div>
         ) : (
-          <p className="text-sm text-muted">No active match.</p>
+          <p className="text-sm text-muted">No attendance submission yet.</p>
         )}
 
         {attendanceMessage && <p className="status-ok text-sm">{attendanceMessage}</p>}

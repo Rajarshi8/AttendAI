@@ -38,7 +38,7 @@ def register_user(payload: RegisterRequest, auth_user: dict = Depends(get_reques
     if average_embedding is None:
         raise HTTPException(status_code=400, detail="Failed to create user embedding.")
 
-    appwrite_service.create_user_doc(user_id=user_id, name=name, email=email)
+    user_doc = appwrite_service.ensure_user_doc_from_account(auth_user)
     appwrite_service.store_embedding(user_id=user_id, embedding=average_embedding)
 
     return UserResponse(
@@ -46,5 +46,6 @@ def register_user(payload: RegisterRequest, auth_user: dict = Depends(get_reques
         name=name,
         email=email,
         user_id=user_id,
+        role=appwrite_service.get_user_role(user_id),
         face_samples=len(embeddings),
     )

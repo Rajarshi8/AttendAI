@@ -1,4 +1,14 @@
-import { AttendanceListResponse, AttendanceMarkResponse, RecognizeResult, RegisterResponse } from "@/types";
+import {
+  ActiveSessionResponse,
+  AttendanceListResponse,
+  AttendanceMarkResponse,
+  CurrentUserProfile,
+  RecognizeResult,
+  RegisterResponse,
+  SessionItem,
+  SessionStartResponse,
+  SessionStopResponse,
+} from "@/types";
 import { getAuthJwt } from "@/lib/appwrite";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api";
@@ -57,16 +67,76 @@ export function recognizeUser(payload: {
   });
 }
 
-export function markAttendance(payload?: { status?: string }) {
-  const requestBody = { status: payload?.status || "present" };
+export function markAttendance(payload?: {
+  session_id: string;
+  frame?: string;
+  frames?: string[];
+  latitude: number;
+  longitude: number;
+  threshold?: number;
+  require_liveness?: boolean;
+}) {
+  const requestBody = {
+    session_id: payload?.session_id,
+    frame: payload?.frame,
+    frames: payload?.frames || [],
+    latitude: payload?.latitude,
+    longitude: payload?.longitude,
+    threshold: payload?.threshold,
+    require_liveness: payload?.require_liveness ?? true,
+  };
+
   return request<AttendanceMarkResponse>("/attendance", {
     method: "POST",
     body: JSON.stringify(requestBody),
   });
 }
 
+export function getCurrentProfile() {
+  return request<CurrentUserProfile>("/users/me", {
+    method: "GET",
+  });
+}
+
+export function startSession(payload: {
+  class_name: string;
+  latitude: number;
+  longitude: number;
+  radius_meters: number;
+  end_time?: string;
+}) {
+  return request<SessionStartResponse>("/sessions/start", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function stopSession(session_id: string) {
+  return request<SessionStopResponse>("/sessions/stop", {
+    method: "POST",
+    body: JSON.stringify({ session_id }),
+  });
+}
+
+export function getActiveSession() {
+  return request<ActiveSessionResponse>("/sessions/active", {
+    method: "GET",
+  });
+}
+
+export function listSessions(params?: { mine?: boolean; limit?: number }) {
+  const query = new URLSearchParams();
+  if (params?.mine !== undefined) query.set("mine", String(params.mine));
+  query.set("limit", String(params?.limit ?? 100));
+
+  return request<SessionItem[]>(`/sessions?${query.toString()}`, {
+    method: "GET",
+  });
+}
+
 export function getAttendance(params: {
   search?: string;
+  session_id?: string;
   start_date?: string;
   end_date?: string;
   limit?: number;
@@ -74,6 +144,7 @@ export function getAttendance(params: {
 }) {
   const query = new URLSearchParams();
   if (params.search) query.set("search", params.search);
+  if (params.session_id) query.set("session_id", params.session_id);
   if (params.start_date) query.set("start_date", params.start_date);
   if (params.end_date) query.set("end_date", params.end_date);
   query.set("limit", String(params.limit ?? 100));
@@ -84,11 +155,13 @@ export function getAttendance(params: {
 
 export function getAttendanceCsvUrl(params: {
   search?: string;
+  session_id?: string;
   start_date?: string;
   end_date?: string;
 }) {
   const query = new URLSearchParams();
   if (params.search) query.set("search", params.search);
+  if (params.session_id) query.set("session_id", params.session_id);
   if (params.start_date) query.set("start_date", params.start_date);
   if (params.end_date) query.set("end_date", params.end_date);
 
@@ -97,6 +170,7 @@ export function getAttendanceCsvUrl(params: {
 
 export async function downloadAttendanceCsv(params: {
   search?: string;
+  session_id?: string;
   start_date?: string;
   end_date?: string;
 }) {
@@ -107,6 +181,7 @@ export async function downloadAttendanceCsv(params: {
 
   const query = new URLSearchParams();
   if (params.search) query.set("search", params.search);
+  if (params.session_id) query.set("session_id", params.session_id);
   if (params.start_date) query.set("start_date", params.start_date);
   if (params.end_date) query.set("end_date", params.end_date);
 

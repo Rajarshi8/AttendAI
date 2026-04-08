@@ -5,6 +5,8 @@ Production-ready full-stack attendance platform with:
 - FastAPI AI backend (DeepFace/FaceNet embeddings, liveness, cosine similarity)
 - Next.js frontend
 - Appwrite Authentication + Database
+- Admin + Student role-based access
+- Admin-controlled attendance sessions with geofencing
 - JWT-protected backend APIs
 
 ## Architecture
@@ -17,6 +19,8 @@ Next.js Frontend -> Appwrite (Auth + Database) -> FastAPI (AI Engine + Secure AP
 - SQLAlchemy session usage removed from active routes.
 - Appwrite Python SDK now handles users and attendance storage.
 - Appwrite JWT is required on all /api routes.
+- Session lifecycle (start/stop/active) is now controlled by admin role.
+- Attendance marking now validates geofence + face match for authenticated student.
 - Face AI logic remains unchanged (embedding extraction, matching, liveness checks).
 
 ## Project Structure
@@ -76,23 +80,39 @@ AttendAI/
 1. Open Appwrite Console for project AttendAI.
 2. Create one Database. Copy DATABASE_ID.
 3. Create collection users and copy USERS_COLLECTION_ID.
-4. Create collection attendance and copy ATTENDANCE_COLLECTION_ID.
+4. Create collection sessions and copy SESSIONS_COLLECTION_ID.
+5. Create collection attendance and copy ATTENDANCE_COLLECTION_ID.
 
 ### users collection attributes
 
 - user_id: string, required
 - name: string, required
 - email: string, required
+- role: string, required (admin or student)
 - embedding: string array or JSON-compatible array field (required)
 - created_at: datetime string, required
+
+### sessions collection attributes
+
+- session_id: string, required
+- admin_id: string, required
+- class_name: string, required
+- start_time: datetime string, required
+- end_time: datetime string, optional
+- latitude: float, required
+- longitude: float, required
+- radius_meters: number, required
+- is_active: boolean, required
 
 ### attendance collection attributes
 
 - id: string, required
 - user_id: string, required
+- session_id: string, required
 - timestamp: datetime string, required
 - date: string (YYYY-MM-DD), required
 - status: string, required
+- distance: number, required
 
 ### Recommended indexes
 
@@ -101,9 +121,17 @@ users collection:
 - key index on user_id
 - key index on email
 
+sessions collection:
+
+- key index on session_id
+- key index on admin_id
+- key index on is_active
+- key index on start_time
+
 attendance collection:
 
 - key index on user_id
+- key index on session_id
 - key index on date
 - key index on timestamp
 
@@ -124,6 +152,7 @@ Backend:
 - Token is validated against Appwrite Account API.
 - request.state.user_id is injected from verified identity.
 - Frontend-provided user_id is never trusted.
+- Role is loaded from Appwrite users document and enforced server-side.
 
 ## API Endpoints
 
@@ -136,6 +165,35 @@ Base URL: /api
     "images": ["data:image/jpeg;base64,...", "..."]
     }
   - Stores averaged embedding in Appwrite users collection for authenticated user.
+
+- GET /users/me
+  - Auth required
+  - Returns profile with role and embedding availability.
+
+- POST /sessions/start
+  - Auth required (admin only)
+  - Body:
+    {
+    "class_name": "Computer Networks",
+    "latitude": 22.57,
+    "longitude": 88.36,
+    "radius_meters": 75,
+    "end_time": "2026-04-08T10:45:00Z"
+    }
+
+- POST /sessions/stop
+  - Auth required (admin only)
+  - Body:
+    {
+    "session_id": "..."
+    }
+
+- GET /sessions/active
+  - Auth required
+
+- GET /sessions
+  - Auth required (admin only)
+  - Query params: mine, limit
 
 - POST /recognize
   - Auth required
@@ -152,14 +210,22 @@ Base URL: /api
   - Auth required
   - Body:
     {
-    "status": "present"
+    "session_id": "...",
+    "frame": "data:image/jpeg;base64,...",
+    "frames": ["data:image/jpeg;base64,...", "..."],
+    "latitude": 22.57,
+    "longitude": 88.36,
+    "threshold": 0.6,
+    "require_liveness": true
     }
-  - user_id is derived from JWT.
-  - Duplicate same-day attendance is blocked.
+  - user_id is derived from JWT and never trusted from frontend.
+  - Geofence distance is validated using Haversine formula.
+  - Status stored as present or denied with distance.
+  - Duplicate per session per user is blocked.
 
 - GET /attendance
   - Auth required
-  - Query params: search, start_date, end_date, limit, offset, export
+  - Query params: search, session_id, start_date, end_date, limit, offset, export
 
 - GET /attendance/export
   - Auth required
@@ -184,6 +250,7 @@ Copy from backend/.env.example and set:
 - APPWRITE_API_KEY=<YOUR_SERVER_API_KEY>
 - APPWRITE_DATABASE_ID=<DATABASE_ID>
 - APPWRITE_USERS_COLLECTION_ID=<USERS_COLLECTION_ID>
+- APPWRITE_SESSIONS_COLLECTION_ID=<SESSIONS_COLLECTION_ID>
 - APPWRITE_ATTENDANCE_COLLECTION_ID=<ATTENDANCE_COLLECTION_ID>
 - FACE_MODEL=Facenet512
 - DEFAULT_SIMILARITY_THRESHOLD=0.6
@@ -230,5 +297,7 @@ Open http://localhost:3000
 
 - All /api endpoints except /health are JWT-protected.
 - Backend never accepts user_id from frontend for attendance.
-- Duplicate attendance per user/day is enforced in Appwrite data checks.
+- Only admin role can create and stop sessions.
+- Geofence validation is enforced server-side.
+- Duplicate attendance per user/session is enforced in Appwrite data checks.
 - For production hardening add role-based route authorization and request rate limiting.

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     appwrite_api_key: str = ""
     appwrite_database_id: str = ""
     appwrite_users_collection_id: str = ""
+    appwrite_sessions_collection_id: str = ""
     appwrite_attendance_collection_id: str = ""
 
     face_model: str = "Facenet512"

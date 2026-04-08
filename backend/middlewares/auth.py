@@ -57,3 +57,8 @@ def get_request_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
     return str(user_id)
+
+
+def get_request_user_role(request: Request) -> str:
+    user_id = get_request_user_id(request)
+    return appwrite_service.get_user_role(user_id)
