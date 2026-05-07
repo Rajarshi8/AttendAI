@@ -8,7 +8,7 @@ from schemas.user import RegisterRequest, UserResponse
 from services.appwrite_client import appwrite_service
 from services.cache import embedding_cache
 from services.face_recognition import face_service
-from utils.image import decode_base64_image
+from utils.image import decode_base64_image_checked, image_error_status_code
 
 router = APIRouter(prefix="/register", tags=["registration"])
 logger = get_logger(__name__)
@@ -31,8 +31,13 @@ def register_user(payload: RegisterRequest, auth_user: dict = Depends(get_reques
 
     name = auth_user.get("name") or email or "User"
 
-    decoded_frames = [decode_base64_image(image) for image in payload.images]
-    decoded_frames = [frame for frame in decoded_frames if frame is not None]
+    decoded_frames = []
+    for image in payload.images:
+        frame, error_code, message = decode_base64_image_checked(image)
+        if error_code:
+            raise HTTPException(status_code=image_error_status_code(error_code), detail=message)
+        if frame is not None:
+            decoded_frames.append(frame)
 
     if len(decoded_frames) < 10:
         raise HTTPException(status_code=400, detail="At least 10 valid face images are required.")

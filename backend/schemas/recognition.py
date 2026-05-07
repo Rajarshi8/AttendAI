@@ -14,3 +14,4 @@ class RecognizeResponse(BaseModel):
     similarity: float | None = None
     user: dict | None = None
     message: str
+    error_code: str | None = None

@@ -15,7 +15,19 @@ class _StructuredFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         base = super().format(record)
         extras: list[str] = []
-        for key in ("user_id", "session_id", "similarity", "distance", "error_code"):
+        for key in (
+            "request_id",
+            "user_id",
+            "session_id",
+            "similarity",
+            "distance",
+            "error_code",
+            "client_ip",
+            "method",
+            "path",
+            "status_code",
+            "duration_ms",
+        ):
             val = record.__dict__.get(key)
             if val is not None:
                 extras.append(f"{key}={val}")
@@ -60,6 +72,8 @@ def log_recognition(
     distance: float | None = None,
     matched: bool,
     status: str,
+    request_id: str | None = None,
+    error_code: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Emit a structured recognition log line."""
@@ -67,9 +81,12 @@ def log_recognition(
     logger.info(
         msg,
         extra={
+            "request_id": request_id,
             "user_id": user_id,
             "session_id": session_id or "",
             "similarity": f"{similarity:.4f}" if similarity is not None else "N/A",
             "distance": f"{distance:.2f}" if distance is not None else "N/A",
+            "error_code": error_code,
+            **(extra or {}),
         },
     )

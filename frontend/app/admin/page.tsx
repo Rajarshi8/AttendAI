@@ -13,29 +13,21 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { Loader2, TrendingUp, Users, CheckCircle, XCircle, RefreshCw } from "lucide-react";
+import { Loader2, TrendingUp, Users, CheckCircle, XCircle, RefreshCw, MapPin } from "lucide-react";
 
 import {
   downloadAttendanceCsv,
   getActiveSession,
   getAttendance,
+  getAttendanceAnalytics,
   getCurrentProfile,
   startSession,
   stopSession,
 } from "@/lib/api";
 import { subscribeToSessions } from "@/lib/appwrite";
-import { AttendanceRecord, CurrentUserProfile, SessionItem } from "@/types";
+import { AttendanceAnalyticsResponse, AttendanceRecord, CurrentUserProfile, SessionItem } from "@/types";
 
 // ─── Analytics types ──────────────────────────────────────────────────────────
-
-interface AnalyticsSummary {
-  total_students: number;
-  present_count: number;
-  denied_count: number;
-  total_submissions: number;
-  attendance_rate: number;
-  by_session: { session_id: string; class_name: string; present: number; denied: number }[];
-}
 
 // ─── Stat card ────────────────────────────────────────────────────────────────
 
@@ -86,7 +78,7 @@ export default function AdminPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
+  const [analytics, setAnalytics] = useState<AttendanceAnalyticsResponse | null>(null);
 
   // ── Data fetching ────────────────────────────────────────────────────────────
 
@@ -105,26 +97,6 @@ export default function AdminPage() {
         setRecords(response.items);
         setTotal(response.total);
 
-        // Build client-side analytics from returned items
-        const present = response.items.filter((r) => r.status === "present").length;
-        const denied = response.items.filter((r) => r.status === "denied").length;
-        const bySession: Record<string, { session_id: string; class_name: string; present: number; denied: number }> = {};
-        for (const rec of response.items) {
-          const sid = rec.session_id || "unknown";
-          if (!bySession[sid]) {
-            bySession[sid] = { session_id: sid, class_name: "", present: 0, denied: 0 };
-          }
-          if (rec.status === "present") bySession[sid].present++;
-          else bySession[sid].denied++;
-        }
-        setAnalytics({
-          total_students: response.total,
-          present_count: present,
-          denied_count: denied,
-          total_submissions: response.items.length,
-          attendance_rate: response.items.length > 0 ? Math.round((present / response.items.length) * 1000) / 10 : 0,
-          by_session: Object.values(bySession).slice(0, 6),
-        });
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not fetch attendance logs.");
       } finally {
@@ -146,6 +118,15 @@ export default function AdminPage() {
     }
   }, []);
 
+  const loadAnalytics = useCallback(async () => {
+    try {
+      const summary = await getAttendanceAnalytics();
+      setAnalytics(summary);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load analytics.");
+    }
+  }, []);
+
   useEffect(() => {
     void (async () => {
       try {
@@ -154,9 +135,9 @@ export default function AdminPage() {
       } catch (err) {
         setError(err instanceof Error ? err.message : "Could not load profile.");
       }
-      await Promise.all([loadData({}), loadSessionState()]);
+      await Promise.all([loadData({}), loadSessionState(), loadAnalytics()]);
     })();
-  }, [loadData, loadSessionState]);
+  }, [loadAnalytics, loadData, loadSessionState]);
 
   // ── Realtime subscription ────────────────────────────────────────────────────
 
@@ -214,7 +195,10 @@ export default function AdminPage() {
       setActiveSession(response.session);
       setSessionFilter(response.session.session_id);
       setAdminMessage(response.message);
-      await loadData({ search, session_id: response.session.session_id, start_date: startDate, end_date: endDate });
+      await Promise.all([
+        loadData({ search, session_id: response.session.session_id, start_date: startDate, end_date: endDate }),
+        loadAnalytics(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start attendance session.");
     } finally {
@@ -231,7 +215,10 @@ export default function AdminPage() {
       const response = await stopSession(activeSession.session_id);
       setActiveSession(response.session.is_active ? response.session : null);
       setAdminMessage(response.message);
-      await loadData({ search, session_id: sessionFilter, start_date: startDate, end_date: endDate });
+      await Promise.all([
+        loadData({ search, session_id: sessionFilter, start_date: startDate, end_date: endDate }),
+        loadAnalytics(),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not stop session.");
     } finally {
@@ -310,7 +297,7 @@ export default function AdminPage() {
 
       {/* ── Analytics cards ──────────────────────────────────────────────────── */}
       {analytics && (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <StatCard
             icon={Users}
             label="Total Submissions"
@@ -334,6 +321,12 @@ export default function AdminPage() {
             label="Attendance Rate"
             value={`${analytics.attendance_rate}%`}
             color="bg-accent/10 text-accent"
+          />
+          <StatCard
+            icon={MapPin}
+            label="Avg Distance"
+            value={`${analytics.average_distance}m`}
+            color="bg-purple-500/10 text-purple-500"
           />
         </div>
       )}

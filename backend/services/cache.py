@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -25,6 +27,7 @@ class EmbeddingCache:
 
     def __init__(self, refresh_interval_minutes: int | None = None) -> None:
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._store: dict[str, list[float]] = {}
         self._meta: dict[str, dict] = {}  # user_id → {name, email}
         self._last_refresh: datetime | None = None
@@ -52,6 +55,17 @@ class EmbeddingCache:
         with self._lock:
             self._last_refresh = None
         logger.info("EmbeddingCache: invalidated — will reload on next request.")
+
+    async def refresh_loop(self, stop_event: asyncio.Event) -> None:
+        """Background refresh loop to keep cache warm without request load."""
+        interval_seconds = max(int(self._refresh_interval_minutes * 60), 30)
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+            except asyncio.TimeoutError:
+                self.refresh_if_stale()
+                continue
+            break
 
     def get_all(self) -> list[SimpleNamespace]:
         """
@@ -93,6 +107,10 @@ class EmbeddingCache:
         # Import here to avoid circular imports at module level
         from services.appwrite_client import appwrite_service  # noqa: PLC0415
 
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+
+        start = time.perf_counter()
         logger.info("EmbeddingCache: refreshing from Appwrite…")
         try:
             docs = appwrite_service.get_all_users()
@@ -115,12 +133,15 @@ class EmbeddingCache:
                 self._last_refresh = datetime.now(timezone.utc)
 
             logger.info(
-                "EmbeddingCache: loaded %d users (%d with embeddings).",
+                "EmbeddingCache: loaded %d users (%d with embeddings) in %.2f ms.",
                 len(new_store),
                 sum(1 for e in new_store.values() if e),
+                (time.perf_counter() - start) * 1000,
             )
         except Exception as exc:
             logger.error("EmbeddingCache: refresh failed — %s", exc)
+        finally:
+            self._refresh_lock.release()
 
 
 # Singleton — imported by routes

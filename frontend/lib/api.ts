@@ -2,6 +2,7 @@ import {
   ActiveSessionResponse,
   AttendanceListResponse,
   AttendanceMarkResponse,
+  AttendanceAnalyticsResponse,
   CurrentUserProfile,
   RecognizeResult,
   RegisterResponse,
@@ -139,6 +140,7 @@ export function listSessions(params?: { mine?: boolean; limit?: number }) {
 export function getAttendance(params: {
   search?: string;
   session_id?: string;
+  user_id?: string;
   start_date?: string;
   end_date?: string;
   limit?: number;
@@ -147,12 +149,19 @@ export function getAttendance(params: {
   const query = new URLSearchParams();
   if (params.search) query.set("search", params.search);
   if (params.session_id) query.set("session_id", params.session_id);
+  if (params.user_id) query.set("user_id", params.user_id);
   if (params.start_date) query.set("start_date", params.start_date);
   if (params.end_date) query.set("end_date", params.end_date);
   query.set("limit", String(params.limit ?? 100));
   query.set("offset", String(params.offset ?? 0));
 
   return request<AttendanceListResponse>(`/attendance?${query.toString()}`);
+}
+
+export function getAttendanceAnalytics() {
+  return request<AttendanceAnalyticsResponse>("/attendance/analytics", {
+    method: "GET",
+  });
 }
 
 export function getAttendanceCsvUrl(params: {

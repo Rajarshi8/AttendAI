@@ -114,10 +114,21 @@ MAX_FRAME_WIDTH=640
 LIVENESS_MIN_FRAMES=6
 LIVENESS_MIN_DISPLACEMENT=15
 CACHE_REFRESH_INTERVAL_MINUTES=10
+CACHE_BACKGROUND_REFRESH_ENABLED=true
 GEOFENCE_BUFFER_METERS=10
 GPS_ACCURACY_LIMIT_METERS=50
 RATE_LIMIT_ATTENDANCE=10/minute
 RATE_LIMIT_RECOGNIZE=20/minute
+TRUST_PROXY_HEADERS=true
+TRUSTED_PROXY_COUNT=1
+MAX_REQUEST_BYTES=8388608
+MAX_IMAGE_BYTES=2097152
+MAX_IMAGE_WIDTH=1280
+MAX_IMAGE_HEIGHT=720
+ALLOWED_IMAGE_MIME_TYPES_RAW=image/jpeg,image/png
+MIN_FACE_BRIGHTNESS=45
+LOW_LIGHT_BOOST_THRESHOLD=75
+MAX_FACE_CENTER_OFFSET_RATIO=0.35
 ```
 
 ### 2.3 Dockerfile (already in `backend/Dockerfile`)
@@ -158,6 +169,9 @@ In the backend `CORS_ORIGINS`, set **exactly** the Vercel deployment URL:
 ```
 CORS_ORIGINS=https://your-app.vercel.app
 ```
+
+> [!IMPORTANT]
+> Do not use `*` for CORS in production. The backend now validates this at startup.
 
 For multiple environments (preview + prod):
 ```
@@ -229,5 +243,19 @@ python -m pytest tests/ -v
 | Appwrite Realtime | Session popup on student page — zero polling |
 | Admin analytics | Pie + bar charts, stat cards |
 | Structured logging | JSON-like `key=value` log lines, recognition events |
+| Request size guardrails | Rejects oversized request bodies and images |
+| Proxy-aware rate limiting | Real client IP via `X-Forwarded-For` / `CF-Connecting-IP` |
+| Backend analytics | Centralized admin analytics endpoint |
 | Dead code removed | `database/`, `models/`, `services/attendance.py` deleted |
-| Test suite | `pytest` — 10 test cases covering all main paths |
+| Test suite | `pytest` — auth, sessions, analytics, and upload guardrails covered |
+
+---
+
+## 9 — Production Hardening Checklist
+
+- [ ] `APP_ENV=production`, `APP_DEBUG=false`
+- [ ] `CORS_ORIGINS_RAW` set to exact Vercel domains (no `*`)
+- [ ] `TRUST_PROXY_HEADERS=true`, `TRUSTED_PROXY_COUNT=1` on Render
+- [ ] `MAX_REQUEST_BYTES` + image limits tuned for expected payloads
+- [ ] Appwrite API key set with Database read/write only
+- [ ] Run `pytest tests/ -v` before deploy

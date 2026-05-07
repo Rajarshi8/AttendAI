@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -12,7 +13,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from core.config import get_settings
 from core.logging import setup_logging, get_logger
-from middlewares import AppwriteAuthMiddleware
+from middlewares import AppwriteAuthMiddleware, RequestContextMiddleware, RequestSizeLimitMiddleware
 from routes import attendance_router, recognize_router, register_router, sessions_router, users_router
 from services.cache import embedding_cache
 from services.rate_limiter import limiter
@@ -20,6 +21,7 @@ from services.rate_limiter import limiter
 setup_logging()
 logger = get_logger(__name__)
 settings = get_settings()
+settings.validate()
 
 
 @asynccontextmanager
@@ -31,7 +33,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("Embedding cache ready with %d users.", embedding_cache.size())
     except Exception as exc:
         logger.warning("Could not pre-load embedding cache: %s — will load on first request.", exc)
+
+    stop_event = asyncio.Event()
+    refresh_task = None
+    if settings.cache_background_refresh_enabled:
+        refresh_task = asyncio.create_task(embedding_cache.refresh_loop(stop_event))
     yield
+    stop_event.set()
+    if refresh_task:
+        await refresh_task
     logger.info("AttendAI shutting down.")
 
 
@@ -54,6 +64,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AppwriteAuthMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(RequestContextMiddleware)
 
 
 @app.get("/health", tags=["health"])

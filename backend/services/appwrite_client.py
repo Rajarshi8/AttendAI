@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Iterable, Literal
 
 from appwrite.client import Client
 from appwrite.exception import AppwriteException
@@ -293,39 +293,59 @@ class AppwriteService:
         return True, record, "Attendance marked successfully."
 
     def get_attendance(self, filters: dict[str, Any]) -> tuple[int, list[dict[str, Any]]]:
-        search = (filters.get("search") or "").strip().lower()
+        search = (filters.get("search") or "").strip()
         start_date = filters.get("start_date")
         end_date = filters.get("end_date")
         session_id = filters.get("session_id")
-        limit = int(filters.get("limit", 100))
+        user_id = filters.get("user_id")
+        limit = min(int(filters.get("limit", 100)), 100)
         offset = int(filters.get("offset", 0))
 
-        attendance_docs = self.databases.list_documents(
+        queries: list[Any] = [
+            Query.limit(limit),
+            Query.offset(offset),
+            Query.order_desc("timestamp"),
+        ]
+
+        if session_id:
+            queries.append(Query.equal("session_id", [session_id]))
+        if start_date:
+            queries.append(Query.greater_than_equal("date", start_date))
+        if end_date:
+            queries.append(Query.less_than_equal("date", end_date))
+
+        user_ids: list[str] | None = None
+        if user_id:
+            user_ids = [user_id]
+
+        if search:
+            user_ids = self._resolve_user_ids(search, existing=user_ids)
+            if not user_ids:
+                return 0, []
+
+        if user_ids:
+            queries.append(Query.equal("user_id", user_ids))
+
+        response = self.databases.list_documents(
             database_id=settings.appwrite_database_id,
             collection_id=settings.appwrite_attendance_collection_id,
-            queries=[Query.limit(5000)],
-        ).get("documents", [])
+            queries=queries,
+        )
+        attendance_docs = response.get("documents", [])
+        total = int(response.get("total", len(attendance_docs)))
 
-        users = self.get_all_users()
-        user_by_id = {doc.get("user_id"): doc for doc in users}
-        sessions = self.list_sessions(limit=5000)
-        session_by_id = {doc.get("session_id") or doc.get("$id"): doc for doc in sessions}
+        user_ids_in_page = {doc.get("user_id") for doc in attendance_docs if doc.get("user_id")}
+        session_ids_in_page = {doc.get("session_id") for doc in attendance_docs if doc.get("session_id")}
+
+        user_by_id = self._fetch_users_by_ids(user_ids_in_page)
+        session_by_id = self._fetch_sessions_by_ids(session_ids_in_page)
 
         enriched: list[dict[str, Any]] = []
         for doc in attendance_docs:
             uid = doc.get("user_id", "")
-            user_doc = user_by_id.get(uid, {})
             attendance_date = doc.get("date") or ""
             row_session_id = str(doc.get("session_id") or "")
-
-            if session_id and row_session_id != session_id:
-                continue
-
-            if start_date and attendance_date and attendance_date < start_date:
-                continue
-            if end_date and attendance_date and attendance_date > end_date:
-                continue
-
+            user_doc = user_by_id.get(uid, {})
             session_doc = session_by_id.get(row_session_id, {})
 
             row = {
@@ -342,16 +362,186 @@ class AppwriteService:
                 "class_name": session_doc.get("class_name") or "",
             }
 
-            haystack = f"{row['user_name']} {row['email']} {row['user_code']}".lower()
-            if search and search not in haystack:
-                continue
-
             enriched.append(row)
 
-        enriched.sort(key=lambda item: item.get("timestamp") or "", reverse=True)
-        total = len(enriched)
-        paged = enriched[offset : offset + limit]
-        return total, paged
+        return total, enriched
+
+    def get_attendance_export(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
+        limit = min(int(filters.get("limit", 100)), 100)
+        offset = 0
+        all_items: list[dict[str, Any]] = []
+
+        while True:
+            total, items = self.get_attendance(
+                {
+                    **filters,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            )
+            all_items.extend(items)
+            offset += limit
+            if offset >= total or not items:
+                break
+
+        return all_items
+
+    def get_attendance_analytics(self) -> dict[str, Any]:
+        total_students = self._get_total_students()
+        total_submissions = self._count_attendance()
+        present_count = self._count_attendance(status="present")
+        denied_count = self._count_attendance(status="denied")
+
+        avg_distance = self._average_distance()
+        attendance_rate = round((present_count / total_submissions * 100), 1) if total_submissions else 0.0
+
+        by_session: list[dict[str, Any]] = []
+        for session in self.list_sessions(limit=6):
+            session_id = str(session.get("session_id") or session.get("$id") or "")
+            if not session_id:
+                continue
+            present = self._count_attendance(status="present", session_id=session_id)
+            denied = self._count_attendance(status="denied", session_id=session_id)
+            by_session.append(
+                {
+                    "session_id": session_id,
+                    "class_name": session.get("class_name") or "",
+                    "present": present,
+                    "denied": denied,
+                }
+            )
+
+        return {
+            "total_students": total_students,
+            "present_count": present_count,
+            "denied_count": denied_count,
+            "total_submissions": total_submissions,
+            "attendance_rate": attendance_rate,
+            "average_distance": avg_distance,
+            "by_session": by_session,
+        }
+
+    def _resolve_user_ids(self, search: str, existing: list[str] | None = None) -> list[str]:
+        candidates: set[str] = set(existing or [])
+        search_text = search.strip()
+
+        if not search_text:
+            return list(candidates)
+
+        # Exact match for user_id
+        candidates.add(search_text)
+
+        queries = [Query.limit(200)]
+        try:
+            if "@" in search_text:
+                queries.append(Query.search("email", search_text))
+            else:
+                queries.append(Query.search("name", search_text))
+
+            response = self.databases.list_documents(
+                database_id=settings.appwrite_database_id,
+                collection_id=settings.appwrite_users_collection_id,
+                queries=queries,
+            )
+            for doc in response.get("documents", []):
+                uid = str(doc.get("user_id") or doc.get("$id") or "")
+                if uid:
+                    candidates.add(uid)
+        except Exception:
+            # If search isn't supported, fall back to provided candidates only.
+            pass
+
+        return list(candidates)
+
+    def _fetch_users_by_ids(self, user_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        ids = [uid for uid in user_ids if uid]
+        if not ids:
+            return {}
+
+        results: dict[str, dict[str, Any]] = {}
+        for chunk in self._chunked(ids, 100):
+            response = self.databases.list_documents(
+                database_id=settings.appwrite_database_id,
+                collection_id=settings.appwrite_users_collection_id,
+                queries=[Query.equal("user_id", chunk), Query.limit(200)],
+            )
+            for doc in response.get("documents", []):
+                uid = doc.get("user_id") or doc.get("$id")
+                if uid:
+                    results[str(uid)] = doc
+        return results
+
+    def _fetch_sessions_by_ids(self, session_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        ids = [sid for sid in session_ids if sid]
+        if not ids:
+            return {}
+
+        results: dict[str, dict[str, Any]] = {}
+        for chunk in self._chunked(ids, 100):
+            response = self.databases.list_documents(
+                database_id=settings.appwrite_database_id,
+                collection_id=settings.appwrite_sessions_collection_id,
+                queries=[Query.equal("session_id", chunk), Query.limit(200)],
+            )
+            for doc in response.get("documents", []):
+                sid = doc.get("session_id") or doc.get("$id")
+                if sid:
+                    results[str(sid)] = doc
+        return results
+
+    def _chunked(self, items: list[str], size: int) -> list[list[str]]:
+        return [items[i : i + size] for i in range(0, len(items), size)]
+
+    def _get_total_students(self) -> int:
+        response = self.databases.list_documents(
+            database_id=settings.appwrite_database_id,
+            collection_id=settings.appwrite_users_collection_id,
+            queries=[Query.limit(1)],
+        )
+        return int(response.get("total", 0))
+
+    def _count_attendance(self, status: str | None = None, session_id: str | None = None) -> int:
+        queries: list[Any] = [Query.limit(1)]
+        if status:
+            queries.append(Query.equal("status", [status]))
+        if session_id:
+            queries.append(Query.equal("session_id", [session_id]))
+
+        response = self.databases.list_documents(
+            database_id=settings.appwrite_database_id,
+            collection_id=settings.appwrite_attendance_collection_id,
+            queries=queries,
+        )
+        return int(response.get("total", 0))
+
+    def _average_distance(self) -> float:
+        total_distance = 0.0
+        count = 0
+        offset = 0
+        limit = 100
+
+        while True:
+            response = self.databases.list_documents(
+                database_id=settings.appwrite_database_id,
+                collection_id=settings.appwrite_attendance_collection_id,
+                queries=[Query.limit(limit), Query.offset(offset)],
+            )
+            docs = response.get("documents", [])
+            if not docs:
+                break
+
+            for doc in docs:
+                distance = doc.get("distance")
+                if distance is None:
+                    continue
+                total_distance += float(distance)
+                count += 1
+
+            offset += limit
+            if offset >= int(response.get("total", 0)):
+                break
+
+        return round(total_distance / count, 2) if count else 0.0
 
 
 appwrite_service = AppwriteService()

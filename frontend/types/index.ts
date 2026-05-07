@@ -47,6 +47,7 @@ export interface RecognizeResult {
   similarity: number | null;
   user: UserProfile | null;
   message: string;
+  error_code?: string | null;
 }
 
 export interface AttendanceRecord {
@@ -67,6 +68,16 @@ export interface AttendanceListResponse {
   limit: number;
   offset: number;
   items: AttendanceRecord[];
+}
+
+export interface AttendanceAnalyticsResponse {
+  total_students: number;
+  present_count: number;
+  denied_count: number;
+  total_submissions: number;
+  attendance_rate: number;
+  average_distance: number;
+  by_session: { session_id: string; class_name: string; present: number; denied: number }[];
 }
 
 export interface AttendanceMarkResponse {

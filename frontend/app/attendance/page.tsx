@@ -32,6 +32,18 @@ const ERROR_MESSAGES: Record<string, { icon: string; text: string }> = {
     icon: "⚠️",
     text: "Face does not match your registered profile. Contact your administrator.",
   },
+  MULTIPLE_FACES: {
+    icon: "👥",
+    text: "Multiple faces detected. Only one person can be in frame.",
+  },
+  LOW_LIGHT: {
+    icon: "🌙",
+    text: "Lighting is too low. Move to a brighter area.",
+  },
+  FACE_NOT_CENTERED: {
+    icon: "🎯",
+    text: "Center your face in the frame and try again.",
+  },
 };
 
 // ─── Status pill ──────────────────────────────────────────────────────────────

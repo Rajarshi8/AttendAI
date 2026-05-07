@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -13,6 +14,14 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 
 FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+
+@dataclass(frozen=True)
+class FaceDetectionResult:
+    bbox: tuple[int, int, int, int] | None
+    error_code: str | None
+    message: str | None
+    brightness: float | None = None
 
 
 class FaceRecognitionService:
@@ -38,45 +47,97 @@ class FaceRecognitionService:
     # Face detection
     # ------------------------------------------------------------------
 
-    def detect_faces(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+    def detect_faces(self, gray: np.ndarray) -> list[tuple[int, int, int, int]]:
         """Return a list of (x, y, w, h) bounding boxes for all detected faces."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
         if len(faces) == 0:
             return []
         return [(int(x), int(y), int(w), int(h)) for x, y, w, h in faces]
 
-    def detect_face_bbox(self, frame: np.ndarray) -> tuple[int, int, int, int] | None:
-        """
-        Return the bounding box of the **single largest** face.
-        Returns None if no face is detected or if multiple faces are detected
-        (to prevent ambiguous recognition scenarios).
-        """
-        faces = self.detect_faces(frame)
+    def analyze_frame(self, frame: np.ndarray) -> tuple[np.ndarray, FaceDetectionResult]:
+        resized = self.resize_frame_for_inference(frame)
+        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        brightness = float(np.mean(gray))
+
+        if brightness < settings.min_face_brightness:
+            return (
+                resized,
+                FaceDetectionResult(
+                    bbox=None,
+                    error_code="LOW_LIGHT",
+                    message="Lighting is too low. Move to a brighter area.",
+                    brightness=brightness,
+                ),
+            )
+
+        if brightness < settings.low_light_boost_threshold:
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+
+        faces = self.detect_faces(gray)
         if not faces:
-            return None
+            return (
+                resized,
+                FaceDetectionResult(
+                    bbox=None,
+                    error_code="FACE_NOT_DETECTED",
+                    message="Face not detected. Ensure your face is clearly visible.",
+                    brightness=brightness,
+                ),
+            )
 
         if len(faces) > 1:
-            logger.warning("Multiple faces detected (%d) — rejecting frame to prevent spoofing.", len(faces))
-            return None
+            return (
+                resized,
+                FaceDetectionResult(
+                    bbox=None,
+                    error_code="MULTIPLE_FACES",
+                    message="Multiple faces detected. Only one person can be in frame.",
+                    brightness=brightness,
+                ),
+            )
 
         x, y, w, h = faces[0]
-        return x, y, w, h
+        frame_h, frame_w = resized.shape[:2]
+        center_x = x + (w / 2)
+        center_y = y + (h / 2)
+        offset_x = abs(center_x - (frame_w / 2)) / max(frame_w, 1)
+        offset_y = abs(center_y - (frame_h / 2)) / max(frame_h, 1)
+
+        if max(offset_x, offset_y) > settings.max_face_center_offset_ratio:
+            return (
+                resized,
+                FaceDetectionResult(
+                    bbox=None,
+                    error_code="FACE_NOT_CENTERED",
+                    message="Center your face in the frame and try again.",
+                    brightness=brightness,
+                ),
+            )
+
+        return (
+            resized,
+            FaceDetectionResult(bbox=(x, y, w, h), error_code=None, message=None, brightness=brightness),
+        )
 
     # ------------------------------------------------------------------
     # Embedding extraction
     # ------------------------------------------------------------------
 
     def extract_embedding_from_frame(self, frame: np.ndarray) -> list[float] | None:
-        frame = self.resize_frame_for_inference(frame)
-        bbox = self.detect_face_bbox(frame)
-        if bbox is None:
-            return None
+        embedding, _reason = self.extract_embedding_with_reason(frame)
+        return embedding
 
-        x, y, w, h = bbox
-        face_crop = frame[y : y + h, x : x + w]
+    def extract_embedding_with_reason(
+        self, frame: np.ndarray
+    ) -> tuple[list[float] | None, FaceDetectionResult | None]:
+        resized, detection = self.analyze_frame(frame)
+        if detection.error_code:
+            return None, detection
+        x, y, w, h = detection.bbox or (0, 0, 0, 0)
+        face_crop = resized[y : y + h, x : x + w]
         if face_crop.size == 0:
-            return None
+            return None, FaceDetectionResult(None, "FACE_NOT_DETECTED", "Face crop failed.")
 
         face_crop = cv2.resize(face_crop, (160, 160))
 
@@ -88,14 +149,14 @@ class FaceRecognitionService:
                 enforce_detection=False,
             )
             if not result:
-                return None
+                return None, FaceDetectionResult(None, "FACE_NOT_DETECTED", "Face not detected.")
             embedding = result[0].get("embedding")
             if not embedding:
-                return None
-            return [float(v) for v in embedding]
+                return None, FaceDetectionResult(None, "FACE_NOT_DETECTED", "Face not detected.")
+            return [float(v) for v in embedding], None
         except Exception as exc:
             logger.debug("DeepFace.represent failed: %s", exc)
-            return None
+            return None, FaceDetectionResult(None, "FACE_NOT_DETECTED", "Face embedding failed.")
 
     def extract_embeddings(self, frames: Sequence[np.ndarray], stride: int | None = None) -> list[list[float]]:
         process_stride = max(stride or self.default_stride, 1)
@@ -104,7 +165,7 @@ class FaceRecognitionService:
         for idx, frame in enumerate(frames):
             if idx % process_stride != 0:
                 continue
-            embedding = self.extract_embedding_from_frame(frame)
+            embedding, _reason = self.extract_embedding_with_reason(frame)
             if embedding is not None:
                 embeddings.append(embedding)
 

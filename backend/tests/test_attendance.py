@@ -24,8 +24,8 @@ BASE_PAYLOAD = {
 }
 
 
-def _post(client, payload: dict):
-    return client.post("/api/attendance", json=payload)
+def _post(client, payload: dict, headers: dict | None = None):
+    return client.post("/api/attendance", json=payload, headers=headers)
 
 
 # ---------------------------------------------------------------------------
@@ -33,19 +33,18 @@ def _post(client, payload: dict):
 # ---------------------------------------------------------------------------
 
 class TestValidAttendance:
-    def test_happy_path(self, client, mock_appwrite, mock_cache):
+    def test_happy_path(self, client, mock_appwrite, mock_cache, auth_headers):
         """Student inside geofence, face matches — should return marked=True."""
         mock_cache.get_all.return_value.__iter__ = MagicMock()
 
         with (
             patch("routes.attendance.face_service") as mock_face,
         ):
-            mock_face.extract_embeddings.return_value = [[0.1] * 512]
+            mock_face.extract_embedding_with_reason.return_value = ([0.1] * 512, None)
             mock_face.average_embedding.return_value = [0.1] * 512
-            mock_face.extract_embedding_from_frame.return_value = [0.1] * 512
             mock_face.find_best_match.return_value = (True, mock_cache.get_all()[0], 0.92)
 
-            response = _post(client, BASE_PAYLOAD)
+            response = _post(client, BASE_PAYLOAD, auth_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -54,7 +53,7 @@ class TestValidAttendance:
 
 
 class TestOutOfRange:
-    def test_far_away_location(self, client, mock_appwrite):
+    def test_far_away_location(self, client, mock_appwrite, auth_headers):
         """Student 10 km away — should get OUT_OF_RANGE denial."""
         mock_appwrite.create_session_attendance.return_value = (
             True,
@@ -62,7 +61,7 @@ class TestOutOfRange:
             "Attendance processed.",
         )
         payload = {**BASE_PAYLOAD, "latitude": 13.10, "longitude": 77.70}  # ~18 km away
-        response = _post(client, payload)
+        response = _post(client, payload, auth_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -71,7 +70,7 @@ class TestOutOfRange:
 
 
 class TestDuplicateAttendance:
-    def test_second_submission_rejected(self, client, mock_appwrite):
+    def test_second_submission_rejected(self, client, mock_appwrite, auth_headers):
         """Session already has attendance for this user — duplicate."""
         mock_appwrite.create_session_attendance.return_value = (
             False,
@@ -79,12 +78,11 @@ class TestDuplicateAttendance:
             "Attendance already submitted for this session.",
         )
         with patch("routes.attendance.face_service") as mock_face:
-            mock_face.extract_embeddings.return_value = [[0.1] * 512]
+            mock_face.extract_embedding_with_reason.return_value = ([0.1] * 512, None)
             mock_face.average_embedding.return_value = [0.1] * 512
-            mock_face.extract_embedding_from_frame.return_value = [0.1] * 512
             mock_face.find_best_match.return_value = (True, MagicMock(id="user-test-001"), 0.91)
 
-            response = _post(client, BASE_PAYLOAD)
+            response = _post(client, BASE_PAYLOAD, auth_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -93,23 +91,17 @@ class TestDuplicateAttendance:
 
 
 class TestInvalidJwt:
-    def test_missing_auth_header(self):
+    def test_missing_auth_header(self, client):
         """No auth header — middleware should return 401."""
-        # Use a raw client without auth bypass
-        with patch("services.appwrite_client.appwrite_service"):
-            from main import app
-            from fastapi.testclient import TestClient
-            raw_client = TestClient(app, raise_server_exceptions=False)
-
-        response = raw_client.post("/api/attendance", json=BASE_PAYLOAD)
+        response = client.post("/api/attendance", json=BASE_PAYLOAD)
         assert response.status_code == 401
 
 
 class TestLowGpsAccuracy:
-    def test_low_accuracy_rejected(self, client):
+    def test_low_accuracy_rejected(self, client, auth_headers):
         """GPS accuracy > 50m should be rejected before any face logic."""
         payload = {**BASE_PAYLOAD, "gps_accuracy": 80.0}
-        response = _post(client, payload)
+        response = _post(client, payload, auth_headers)
 
         assert response.status_code == 200
         data = response.json()
@@ -118,17 +110,24 @@ class TestLowGpsAccuracy:
 
 
 class TestSessionNotActive:
-    def test_inactive_session(self, client, mock_appwrite):
+    def test_inactive_session(self, client, mock_appwrite, auth_headers):
         """Posting to an inactive session should be rejected."""
         mock_appwrite.get_session_by_id.return_value = {**MOCK_SESSION, "is_active": False}
-        response = _post(client, BASE_PAYLOAD)
+        response = _post(client, BASE_PAYLOAD, auth_headers)
         assert response.status_code == 400
         assert "not active" in response.json()["detail"].lower()
 
 
 class TestSessionNotFound:
-    def test_unknown_session(self, client, mock_appwrite):
+    def test_unknown_session(self, client, mock_appwrite, auth_headers):
         """Session ID not found — 404."""
         mock_appwrite.get_session_by_id.return_value = None
-        response = _post(client, BASE_PAYLOAD)
+        response = _post(client, BASE_PAYLOAD, auth_headers)
         assert response.status_code == 404
+
+
+class TestRoleEnforcement:
+    def test_admin_cannot_mark_attendance(self, client, mock_appwrite, admin_headers):
+        """Admin role should not be allowed to mark student attendance."""
+        response = _post(client, BASE_PAYLOAD, admin_headers)
+        assert response.status_code == 403

@@ -17,11 +17,23 @@ from services.face_recognition import face_service
 from services.liveness import detect_head_movement
 from services.rate_limiter import limiter
 from utils.geo import haversine_distance_meters
-from utils.image import decode_base64_image
+from utils.image import decode_base64_image_checked, image_error_status_code
 
 router = APIRouter(prefix="/attendance", tags=["attendance"])
 settings = get_settings()
 logger = get_logger(__name__)
+
+DETECTION_MESSAGES = {
+    "MULTIPLE_FACES": "Multiple faces detected. Only one person can be in frame.",
+    "LOW_LIGHT": "Lighting is too low. Move to a brighter area.",
+    "FACE_NOT_CENTERED": "Center your face in the frame and try again.",
+}
+
+
+def _require_admin(user_id: str) -> None:
+    role = appwrite_service.get_user_role(user_id)
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required.")
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +52,8 @@ def mark_attendance(
     Validates: role, session active, GPS accuracy, geofence, liveness, face match.
     user_id is ALWAYS taken from the JWT — never from the request body.
     """
+
+    request.state.session_id = payload.session_id
 
     # ── RBAC ────────────────────────────────────────────────────────────────
     user_role = appwrite_service.get_user_role(user_id)
@@ -60,6 +74,12 @@ def mark_attendance(
             user_id,
             payload.gps_accuracy,
             settings.gps_accuracy_limit_meters,
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "session_id": payload.session_id,
+                "user_id": user_id,
+                "error_code": "LOW_GPS_ACCURACY",
+            },
         )
         return AttendanceMarkResponse(
             marked=False,
@@ -81,6 +101,13 @@ def mark_attendance(
             user_id,
             distance,
             effective_radius,
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "session_id": payload.session_id,
+                "user_id": user_id,
+                "error_code": "OUT_OF_RANGE",
+                "distance": f"{distance:.2f}",
+            },
         )
         marked, record, message = appwrite_service.create_session_attendance(
             user_id=user_id,
@@ -97,10 +124,20 @@ def mark_attendance(
         )
 
     # ── Decode frames ────────────────────────────────────────────────────────
-    decoded_frames = [decode_base64_image(frame) for frame in payload.frames]
-    decoded_frames = [frame for frame in decoded_frames if frame is not None]
+    decoded_frames: list = []
+    for frame in payload.frames:
+        decoded, error_code, message = decode_base64_image_checked(frame)
+        if error_code:
+            raise HTTPException(status_code=image_error_status_code(error_code), detail=message)
+        if decoded is not None:
+            decoded_frames.append(decoded)
 
-    primary_frame = decode_base64_image(payload.frame) if payload.frame else None
+    primary_frame = None
+    if payload.frame:
+        decoded, error_code, message = decode_base64_image_checked(payload.frame)
+        if error_code:
+            raise HTTPException(status_code=image_error_status_code(error_code), detail=message)
+        primary_frame = decoded
     if primary_frame is None and not decoded_frames:
         raise HTTPException(status_code=400, detail="No valid frame provided.")
 
@@ -122,6 +159,17 @@ def mark_attendance(
                 status="denied",
                 distance=distance,
             )
+            log_recognition(
+                logger,
+                user_id=user_id,
+                session_id=payload.session_id,
+                similarity=None,
+                distance=distance,
+                matched=False,
+                status="liveness_failed",
+                request_id=getattr(request.state, "request_id", None),
+                error_code="LIVENESS_FAILED",
+            )
             return AttendanceMarkResponse(
                 marked=marked,
                 message=f"Liveness check failed: {liveness_message}" if marked else message,
@@ -131,12 +179,25 @@ def mark_attendance(
 
     # ── Embedding extraction ─────────────────────────────────────────────────
     embedding: list[float] | None = None
+    reason_code: str | None = None
+
     if decoded_frames:
-        sequence_embeddings = face_service.extract_embeddings(decoded_frames, stride=settings.frame_process_stride)
-        embedding = face_service.average_embedding(sequence_embeddings)
+        embeddings: list[list[float]] = []
+        for idx, frame in enumerate(decoded_frames):
+            if idx % max(settings.frame_process_stride, 1) != 0:
+                continue
+            emb, reason = face_service.extract_embedding_with_reason(frame)
+            if emb is not None:
+                embeddings.append(emb)
+            elif reason and not reason_code:
+                reason_code = reason.error_code
+        embedding = face_service.average_embedding(embeddings)
 
     if embedding is None and primary_frame is not None:
-        embedding = face_service.extract_embedding_from_frame(primary_frame)
+        emb, reason = face_service.extract_embedding_with_reason(primary_frame)
+        embedding = emb
+        if reason and not reason_code:
+            reason_code = reason.error_code
 
     if embedding is None:
         marked, record, message = appwrite_service.create_session_attendance(
@@ -145,10 +206,26 @@ def mark_attendance(
             status="denied",
             distance=distance,
         )
+        error_code = reason_code or "FACE_NOT_DETECTED"
+        error_message = DETECTION_MESSAGES.get(
+            error_code,
+            "Face not detected. Ensure your face is clearly visible and well-lit.",
+        )
+        log_recognition(
+            logger,
+            user_id=user_id,
+            session_id=payload.session_id,
+            similarity=None,
+            distance=distance,
+            matched=False,
+            status="face_rejected",
+            request_id=getattr(request.state, "request_id", None),
+            error_code=error_code,
+        )
         return AttendanceMarkResponse(
             marked=marked,
-            message="Face not detected. Ensure your face is clearly visible and well-lit." if marked else message,
-            error_code="FACE_NOT_DETECTED",
+            message=error_message if marked else message,
+            error_code=error_code,
             record=_to_attendance_record(record, user_id) if marked else None,
         )
 
@@ -163,6 +240,7 @@ def mark_attendance(
     identity_matches_requester = matched and recognized_user_id == user_id
 
     status_value = "present" if identity_matches_requester else "denied"
+    mismatch_error_code = None if status_value == "present" else "FACE_MISMATCH"
 
     # ── Log recognition result ────────────────────────────────────────────────
     log_recognition(
@@ -173,6 +251,8 @@ def mark_attendance(
         distance=distance,
         matched=identity_matches_requester,
         status=status_value,
+        request_id=getattr(request.state, "request_id", None),
+        error_code=mismatch_error_code,
     )
 
     # ── Record attendance ─────────────────────────────────────────────────────
@@ -189,12 +269,10 @@ def mark_attendance(
         else:
             message = "Face does not match your registered profile."
 
-    error_code = None if status_value == "present" else "FACE_MISMATCH"
-
     return AttendanceMarkResponse(
         marked=marked,
         message=message,
-        error_code=error_code if status_value == "denied" else None,
+        error_code=mismatch_error_code if status_value == "denied" else None,
         record=_to_attendance_record(record, user_id),
     )
 
@@ -230,17 +308,20 @@ def _to_attendance_record(record: dict, user_id: str) -> dict:
 def get_attendance_logs(
     search: str | None = Query(default=None),
     session_id: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
+    limit: int = Query(default=100, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     export: bool = Query(default=False),
-    _user_id: str = Depends(get_request_user_id),
+    request_user_id: str = Depends(get_request_user_id),
 ):
+    _require_admin(request_user_id)
     total, items = appwrite_service.get_attendance(
         filters={
             "search": search,
             "session_id": session_id,
+            "user_id": user_id,
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": end_date.isoformat() if end_date else None,
             "limit": limit,
@@ -265,43 +346,8 @@ def get_attendance_logs(
 
 @router.get("/analytics")
 def get_analytics(_user_id: str = Depends(get_request_user_id)) -> dict:
-    """
-    Returns summary statistics for the admin dashboard:
-    total_students, present_count, denied_count, attendance_rate, by_session.
-    """
-    # Load all attendance records (up to 5000)
-    _, all_records = appwrite_service.get_attendance(filters={"limit": 5000, "offset": 0})
-
-    total_students = embedding_cache.size()
-    present_count = sum(1 for r in all_records if r.get("status") == "present")
-    denied_count = sum(1 for r in all_records if r.get("status") == "denied")
-    total_submissions = len(all_records)
-    attendance_rate = round((present_count / total_submissions * 100), 1) if total_submissions else 0.0
-
-    # Aggregate by session
-    by_session: dict[str, dict] = {}
-    for record in all_records:
-        sid = str(record.get("session_id") or "unknown")
-        if sid not in by_session:
-            by_session[sid] = {
-                "session_id": sid,
-                "class_name": record.get("class_name") or "",
-                "present": 0,
-                "denied": 0,
-            }
-        if record.get("status") == "present":
-            by_session[sid]["present"] += 1
-        else:
-            by_session[sid]["denied"] += 1
-
-    return {
-        "total_students": total_students,
-        "present_count": present_count,
-        "denied_count": denied_count,
-        "total_submissions": total_submissions,
-        "attendance_rate": attendance_rate,
-        "by_session": list(by_session.values()),
-    }
+    _require_admin(_user_id)
+    return appwrite_service.get_attendance_analytics()
 
 
 # ---------------------------------------------------------------------------
@@ -314,16 +360,16 @@ def export_attendance_csv(
     session_id: str | None = Query(default=None),
     start_date: date | None = Query(default=None),
     end_date: date | None = Query(default=None),
-    _user_id: str = Depends(get_request_user_id),
+    request_user_id: str = Depends(get_request_user_id),
 ) -> Response:
-    _, items = appwrite_service.get_attendance(
+    _require_admin(request_user_id)
+    items = appwrite_service.get_attendance_export(
         filters={
             "search": search,
             "session_id": session_id,
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": end_date.isoformat() if end_date else None,
-            "limit": 50000,
-            "offset": 0,
+            "limit": 100,
         }
     )
     csv_content = _export_csv(items)
