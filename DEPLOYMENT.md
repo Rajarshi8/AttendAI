@@ -16,65 +16,71 @@ Appwrite Cloud (Auth + Database + Storage)
 
 ## Prerequisites
 
-| Service | Free Tier | URL |
-|---------|-----------|-----|
-| Appwrite Cloud | ✅ Yes | https://appwrite.io |
-| Render | ✅ Yes (750 h/mo) | https://render.com |
-| Vercel | ✅ Yes | https://vercel.com |
+| Service        | Free Tier         | URL                 |
+| -------------- | ----------------- | ------------------- |
+| Appwrite Cloud | ✅ Yes            | https://appwrite.io |
+| Render         | ✅ Yes (750 h/mo) | https://render.com  |
+| Vercel         | ✅ Yes            | https://vercel.com  |
 
 ---
 
 ## 1 — Appwrite Setup
 
 ### 1.1 Create a project
+
 1. Go to https://cloud.appwrite.io — create a new project.
 2. Note your **Project ID**.
 
 ### 1.2 Create a Database
+
 1. Databases → Create database → Note the **Database ID**.
 
 ### 1.3 Create Collections
 
 #### `users` collection
-| Attribute | Type | Required | Default |
-|-----------|------|----------|---------|
-| `user_id` | String (255) | ✅ | — |
-| `name` | String (255) | ✅ | — |
-| `email` | String (255) | ✅ | — |
-| `role` | String (20) | ✅ | `student` |
-| `embedding` | Float[] (array) | ❌ | `[]` |
-| `created_at` | String (50) | ❌ | — |
+
+| Attribute    | Type            | Required | Default   |
+| ------------ | --------------- | -------- | --------- |
+| `user_id`    | String (255)    | ✅       | —         |
+| `name`       | String (255)    | ✅       | —         |
+| `email`      | String (255)    | ✅       | —         |
+| `role`       | String (20)     | ✅       | `student` |
+| `embedding`  | Float[] (array) | ❌       | `[]`      |
+| `created_at` | String (50)     | ❌       | —         |
 
 **Permissions**: Any authenticated user can read their own document. Server key can read/write all.
 
 #### `sessions` collection
-| Attribute | Type | Required |
-|-----------|------|----------|
-| `session_id` | String (255) | ✅ |
-| `admin_id` | String (255) | ✅ |
-| `class_name` | String (255) | ✅ |
-| `start_time` | String (50) | ✅ |
-| `end_time` | String (50) | ❌ |
-| `latitude` | Float | ✅ |
-| `longitude` | Float | ✅ |
-| `radius_meters` | Float | ✅ |
-| `is_active` | Boolean | ✅ |
+
+| Attribute       | Type         | Required |
+| --------------- | ------------ | -------- |
+| `session_id`    | String (255) | ✅       |
+| `admin_id`      | String (255) | ✅       |
+| `class_name`    | String (255) | ✅       |
+| `start_time`    | String (50)  | ✅       |
+| `end_time`      | String (50)  | ❌       |
+| `latitude`      | Float        | ✅       |
+| `longitude`     | Float        | ✅       |
+| `radius_meters` | Float        | ✅       |
+| `is_active`     | Boolean      | ✅       |
 
 > [!IMPORTANT]
 > Enable **Realtime** on the sessions collection. Frontend subscribes to this for instant session popups.
 
 #### `attendance` collection
-| Attribute | Type | Required |
-|-----------|------|----------|
-| `id` | String (255) | ✅ |
-| `user_id` | String (255) | ✅ |
-| `session_id` | String (255) | ❌ |
-| `timestamp` | String (50) | ✅ |
-| `date` | String (20) | ✅ |
-| `status` | String (20) | ✅ |
-| `distance` | Float | ❌ |
+
+| Attribute    | Type         | Required |
+| ------------ | ------------ | -------- |
+| `id`         | String (255) | ✅       |
+| `user_id`    | String (255) | ✅       |
+| `session_id` | String (255) | ❌       |
+| `timestamp`  | String (50)  | ✅       |
+| `date`       | String (20)  | ✅       |
+| `status`     | String (20)  | ✅       |
+| `distance`   | Float        | ❌       |
 
 ### 1.4 Get an API Key
+
 Security → API Keys → Create API key with **Databases** read/write scope.
 
 ---
@@ -82,6 +88,7 @@ Security → API Keys → Create API key with **Databases** read/write scope.
 ## 2 — Backend Deployment (Render)
 
 ### 2.1 Create a Web Service
+
 1. Render dashboard → New → Web Service.
 2. Connect your GitHub repo, set **Root Directory** to `backend`.
 3. **Build Command**: `pip install -r requirements.txt`
@@ -140,6 +147,7 @@ The existing Dockerfile is used automatically by Render if detected.
 ## 3 — Frontend Deployment (Vercel)
 
 ### 3.1 Import Project
+
 1. Vercel dashboard → Add New Project → Import from GitHub.
 2. **Root Directory**: `frontend`
 3. **Framework Preset**: Next.js (auto-detected)
@@ -166,6 +174,7 @@ NEXT_PUBLIC_APPWRITE_SESSIONS_COLLECTION_ID=<sessions_collection_id>
 ## 4 — CORS Configuration
 
 In the backend `CORS_ORIGINS`, set **exactly** the Vercel deployment URL:
+
 ```
 CORS_ORIGINS=https://your-app.vercel.app
 ```
@@ -174,11 +183,13 @@ CORS_ORIGINS=https://your-app.vercel.app
 > Do not use `*` for CORS in production. The backend now validates this at startup.
 
 For multiple environments (preview + prod):
+
 ```
 CORS_ORIGINS=https://your-app.vercel.app,https://your-preview-url.vercel.app
 ```
 
 In Appwrite Console → your project → Settings → Platforms:
+
 - Add a **Web** platform with hostname `your-app.vercel.app`.
 
 ---
@@ -186,6 +197,7 @@ In Appwrite Console → your project → Settings → Platforms:
 ## 5 — Running Locally
 
 ### Backend
+
 ```bash
 cd backend
 python -m venv .venv
@@ -197,6 +209,7 @@ uvicorn main:app --reload --port 8000
 ```
 
 ### Frontend
+
 ```bash
 cd frontend
 npm install
@@ -205,6 +218,7 @@ npm run dev
 ```
 
 ### Docker Compose (both services together)
+
 ```bash
 # From repo root — fill .env files first
 docker-compose up --build
@@ -232,22 +246,22 @@ python -m pytest tests/ -v
 
 ## 8 — Summary of New Production Features
 
-| Feature | Implementation |
-|---------|---------------|
-| In-memory embedding cache | `services/cache.py` — TTL 10 min, startup preload |
-| Rate limiting | `slowapi` — 10/min on `/attendance`, 20/min on `/recognize` |
-| GPS accuracy validation | Rejects if `gps_accuracy > 50m` → `LOW_GPS_ACCURACY` |
-| Geofence buffer | `effective_radius = radius + 10m` |
-| Structured error codes | `OUT_OF_RANGE`, `FACE_NOT_DETECTED`, `LIVENESS_FAILED`, `FACE_MISMATCH` |
-| Multi-face rejection | Rejects frames with >1 face detected |
-| Appwrite Realtime | Session popup on student page — zero polling |
-| Admin analytics | Pie + bar charts, stat cards |
-| Structured logging | JSON-like `key=value` log lines, recognition events |
-| Request size guardrails | Rejects oversized request bodies and images |
-| Proxy-aware rate limiting | Real client IP via `X-Forwarded-For` / `CF-Connecting-IP` |
-| Backend analytics | Centralized admin analytics endpoint |
-| Dead code removed | `database/`, `models/`, `services/attendance.py` deleted |
-| Test suite | `pytest` — auth, sessions, analytics, and upload guardrails covered |
+| Feature                   | Implementation                                                          |
+| ------------------------- | ----------------------------------------------------------------------- |
+| In-memory embedding cache | `services/cache.py` — TTL 10 min, startup preload                       |
+| Rate limiting             | `slowapi` — 10/min on `/attendance`, 20/min on `/recognize`             |
+| GPS accuracy validation   | Rejects if `gps_accuracy > 50m` → `LOW_GPS_ACCURACY`                    |
+| Geofence buffer           | `effective_radius = radius + 10m`                                       |
+| Structured error codes    | `OUT_OF_RANGE`, `FACE_NOT_DETECTED`, `LIVENESS_FAILED`, `FACE_MISMATCH` |
+| Multi-face rejection      | Rejects frames with >1 face detected                                    |
+| Appwrite Realtime         | Session popup on student page — zero polling                            |
+| Admin analytics           | Pie + bar charts, stat cards                                            |
+| Structured logging        | JSON-like `key=value` log lines, recognition events                     |
+| Request size guardrails   | Rejects oversized request bodies and images                             |
+| Proxy-aware rate limiting | Real client IP via `X-Forwarded-For` / `CF-Connecting-IP`               |
+| Backend analytics         | Centralized admin analytics endpoint                                    |
+| Dead code removed         | `database/`, `models/`, `services/attendance.py` deleted                |
+| Test suite                | `pytest` — auth, sessions, analytics, and upload guardrails covered     |
 
 ---
 
