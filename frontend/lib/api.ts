@@ -73,6 +73,7 @@ export function markAttendance(payload?: {
   frames?: string[];
   latitude: number;
   longitude: number;
+  gps_accuracy?: number;
   threshold?: number;
   require_liveness?: boolean;
 }) {
@@ -82,6 +83,7 @@ export function markAttendance(payload?: {
     frames: payload?.frames || [],
     latitude: payload?.latitude,
     longitude: payload?.longitude,
+    gps_accuracy: payload?.gps_accuracy,
     threshold: payload?.threshold,
     require_liveness: payload?.require_liveness ?? true,
   };

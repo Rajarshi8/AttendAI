@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 
 import cv2
@@ -9,6 +10,7 @@ from deepface import DeepFace
 from core.config import get_settings
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 FACE_CASCADE = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
 
@@ -20,6 +22,10 @@ class FaceRecognitionService:
         self.default_stride = max(settings.frame_process_stride, 1)
         self.max_frame_width = max(settings.max_frame_width, 160)
 
+    # ------------------------------------------------------------------
+    # Frame preprocessing
+    # ------------------------------------------------------------------
+
     def resize_frame_for_inference(self, frame: np.ndarray) -> np.ndarray:
         height, width = frame.shape[:2]
         if width <= self.max_frame_width:
@@ -28,15 +34,38 @@ class FaceRecognitionService:
         resized_height = max(int(height * ratio), 1)
         return cv2.resize(frame, (self.max_frame_width, resized_height), interpolation=cv2.INTER_AREA)
 
-    def detect_face_bbox(self, frame: np.ndarray) -> tuple[int, int, int, int] | None:
+    # ------------------------------------------------------------------
+    # Face detection
+    # ------------------------------------------------------------------
+
+    def detect_faces(self, frame: np.ndarray) -> list[tuple[int, int, int, int]]:
+        """Return a list of (x, y, w, h) bounding boxes for all detected faces."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(80, 80))
         if len(faces) == 0:
+            return []
+        return [(int(x), int(y), int(w), int(h)) for x, y, w, h in faces]
+
+    def detect_face_bbox(self, frame: np.ndarray) -> tuple[int, int, int, int] | None:
+        """
+        Return the bounding box of the **single largest** face.
+        Returns None if no face is detected or if multiple faces are detected
+        (to prevent ambiguous recognition scenarios).
+        """
+        faces = self.detect_faces(frame)
+        if not faces:
             return None
 
-        faces = sorted(faces, key=lambda rect: rect[2] * rect[3], reverse=True)
+        if len(faces) > 1:
+            logger.warning("Multiple faces detected (%d) — rejecting frame to prevent spoofing.", len(faces))
+            return None
+
         x, y, w, h = faces[0]
-        return int(x), int(y), int(w), int(h)
+        return x, y, w, h
+
+    # ------------------------------------------------------------------
+    # Embedding extraction
+    # ------------------------------------------------------------------
 
     def extract_embedding_from_frame(self, frame: np.ndarray) -> list[float] | None:
         frame = self.resize_frame_for_inference(frame)
@@ -63,8 +92,9 @@ class FaceRecognitionService:
             embedding = result[0].get("embedding")
             if not embedding:
                 return None
-            return [float(x) for x in embedding]
-        except Exception:
+            return [float(v) for v in embedding]
+        except Exception as exc:
+            logger.debug("DeepFace.represent failed: %s", exc)
             return None
 
     def extract_embeddings(self, frames: Sequence[np.ndarray], stride: int | None = None) -> list[list[float]]:
@@ -79,6 +109,10 @@ class FaceRecognitionService:
                 embeddings.append(embedding)
 
         return embeddings
+
+    # ------------------------------------------------------------------
+    # Embedding math
+    # ------------------------------------------------------------------
 
     @staticmethod
     def average_embedding(embeddings: Sequence[Sequence[float]]) -> list[float] | None:
@@ -97,7 +131,23 @@ class FaceRecognitionService:
             return 0.0
         return float(np.dot(a, b) / denom)
 
-    def find_best_match(self, embedding: Sequence[float], users: Sequence, threshold: float | None = None):
+    # ------------------------------------------------------------------
+    # Matching
+    # ------------------------------------------------------------------
+
+    def find_best_match(
+        self,
+        embedding: Sequence[float],
+        users: Sequence,
+        threshold: float | None = None,
+    ) -> tuple[bool, object | None, float]:
+        """
+        Find the best embedding match from a list of user objects.
+
+        Each user must have: .id, .embedding (list[float]).
+
+        Returns: (matched: bool, best_user | None, best_similarity: float)
+        """
         similarity_threshold = threshold if threshold is not None else self.default_threshold
         best_user = None
         best_similarity = -1.0
@@ -112,7 +162,17 @@ class FaceRecognitionService:
                 best_user = user
 
         matched = best_user is not None and best_similarity >= similarity_threshold
-        return matched, best_user, float(best_similarity if best_similarity >= 0 else 0.0)
+
+        if best_user is not None:
+            logger.debug(
+                "Best match: user=%s similarity=%.4f threshold=%.2f matched=%s",
+                getattr(best_user, "id", "?"),
+                best_similarity,
+                similarity_threshold,
+                matched,
+            )
+
+        return matched, best_user, float(max(best_similarity, 0.0))
 
 
 face_service = FaceRecognitionService()

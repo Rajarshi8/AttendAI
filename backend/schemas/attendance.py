@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import date, datetime
 
 from pydantic import BaseModel, Field
@@ -7,6 +9,8 @@ class AttendanceMarkRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=100)
     latitude: float = Field(ge=-90.0, le=90.0)
     longitude: float = Field(ge=-180.0, le=180.0)
+    # Optional: browser-reported GPS accuracy in meters
+    gps_accuracy: float | None = Field(default=None, gt=0.0)
     frame: str | None = None
     frames: list[str] = Field(default_factory=list)
     threshold: float | None = Field(default=None, gt=0.0, le=1.0)
@@ -29,4 +33,6 @@ class AttendanceItem(BaseModel):
 class AttendanceMarkResponse(BaseModel):
     marked: bool
     message: str
+    # Machine-readable reason code for frontend display logic
+    error_code: str | None = None
     record: AttendanceItem | None = None

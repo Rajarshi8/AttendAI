@@ -72,6 +72,8 @@ export interface AttendanceListResponse {
 export interface AttendanceMarkResponse {
   marked: boolean;
   message: string;
+  /** Machine-readable error code for contextual UI messages */
+  error_code?: string | null;
   record: AttendanceRecord | null;
 }
 

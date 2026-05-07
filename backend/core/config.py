@@ -1,5 +1,4 @@
 from functools import lru_cache
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,7 +10,9 @@ class Settings(BaseSettings):
     app_debug: bool = True
     api_prefix: str = "/api"
 
-    cors_origins: list[str] = ["http://localhost:3000"]
+    # Stored as a raw comma-separated string to avoid pydantic-settings 2.x
+    # treating list[str] fields as JSON-only. Parsed via the property below.
+    cors_origins_raw: str = "http://localhost:3000"
     appwrite_endpoint: str = "https://nyc.cloud.appwrite.io/v1"
     appwrite_project_id: str = "69d53599001c62969125"
     appwrite_api_key: str = ""
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
     appwrite_sessions_collection_id: str = ""
     appwrite_attendance_collection_id: str = ""
 
+    # AI / Face recognition
     face_model: str = "Facenet512"
     default_similarity_threshold: float = 0.6
     frame_process_stride: int = 3
@@ -27,12 +29,21 @@ class Settings(BaseSettings):
     liveness_min_frames: int = 6
     liveness_min_displacement: float = 15.0
 
-    @field_validator("cors_origins", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
-        if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
-        return value
+    # Embedding cache
+    cache_refresh_interval_minutes: int = 10
+
+    # Geofence
+    geofence_buffer_meters: float = 10.0
+    gps_accuracy_limit_meters: float = 50.0
+
+    # Rate limiting
+    rate_limit_attendance: str = "10/minute"
+    rate_limit_recognize: str = "20/minute"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        """Parse comma-separated CORS_ORIGINS_RAW into a list."""
+        return [o.strip() for o in self.cors_origins_raw.split(",") if o.strip()]
 
 
 @lru_cache

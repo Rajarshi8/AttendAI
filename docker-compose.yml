@@ -9,8 +9,6 @@ services:
       - ./backend/.env
     ports:
       - "8000:8000"
-    depends_on:
-      - postgres
 
   frontend:
     build:
